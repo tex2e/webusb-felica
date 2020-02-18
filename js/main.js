@@ -9,14 +9,14 @@ async function sleep(msec) {
 
 async function send(device, data) {
   let uint8a = new Uint8Array(data);
-  console.log(">>>>>>>>>>");
+  console.log(">>>>>>>>>> send");
   console.log(uint8a);
   await device.transferOut(2, uint8a);
   await sleep(10);
 }
 
 async function receive(device, len) {
-  console.log("<<<<<<<<<<" + len);
+  console.log("<<<<<<<<<< recv " + len);
   let data = await device.transferIn(1, len);
   console.log(data);
   await sleep(10);
@@ -28,17 +28,91 @@ async function receive(device, len) {
   return arr;
 }
 
+function array_equal(a, b) {
+  if (a.length != b.length) return false;
+  for (var i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
+}
+
+function sum(array) {
+  let total = 0;
+  for (var i = 0; i < array.length; i++) {
+    total += array[i];
+  }
+  return total;
+}
+
+function int_to_uint16(integer) {
+  return Array.from(new Uint8Array((new Uint16Array([integer])).buffer));
+}
+function uint16_to_int(bytearray) {
+  return (bytearray[1] << 8) + bytearray[0];
+}
+function mod(a, n) {
+  return ((a % n) + n) % n;
+}
+
+ACK = [0x00, 0x00, 0xff, 0x00, 0xff, 0x00];
+
+class Frame {
+  // https://github.com/nfcpy/nfcpy/blob/master/src/nfc/clf/rcs380.py
+
+  constructor(data) {
+    this._data = null;
+    this._type = null;
+    this._frame = null;
+
+    if (array_equal(data.slice(0, 3), [0x00, 0x00, 0xff])) {
+      let frame = data;
+      if (array_equal(frame, [0x00, 0x00, 0xff, 0x00, 0xff, 0x00])) {
+        this._type = "ack";
+      } else if (array_equal(frame, [0x00, 0x00, 0xff, 0xff, 0xff])) {
+        this._type = "err";
+      } else if (array_equal(frame.slice(3, 5), [0xff, 0xff])) {
+        this._type = "data";
+        let length = uint16_to_int(frame.slice(5, 7));
+        this._data = frame.slice(8, 8 + length);
+      }
+    }
+    else {
+      let frame1 = [0x00, 0x00, 0xff, 0xff, 0xff];
+      let frame2 = int_to_uint16(data.length);
+      let frame3 = [mod(256 - sum(frame2), 256)];
+      let frame4 = data;
+      let frame5 = [mod(256 - sum(frame4), 256), 0];
+      let frame = frame1.concat(frame2).concat(frame3)
+                        .concat(frame4).concat(frame5);
+      this._frame = frame;
+    }
+  }
+
+  to_bytes() {
+    return this._frame;
+  }
+
+  get_data() {
+    return this._data;
+  }
+}
+
 async function session(device) {
+  let data;
+  let frame, recv_frame;
   // INFO:nfc.clf:searching for reader on path usb:054c:06c3
   // DEBUG:nfc.clf.transport:using libusb-1.0.21
   // DEBUG:nfc.clf.transport:path matches '^usb(:[0-9a-fA-F]{4})(:[0-9a-fA-F]{4})?$'
   // DEBUG:nfc.clf.device:loading rcs380 driver for usb:054c:06c3
   // Level 9:nfc.clf.transport:>>> 0000ff00ff00
-  await send(device, [0x00, 0x00, 0xff, 0x00, 0xff, 0x00]);
+  /// await send(device, [0x00, 0x00, 0xff, 0x00, 0xff, 0x00]);
+  await send(device, ACK);
 
   // Level 9:nfc.clf.rcs380:SetCommandType 01
   // Level 9:nfc.clf.transport:>>> 0000ffffff0300fdd62a01ff00
-  await send(device, [0x00, 0x00, 0xff, 0xff, 0xff, 0x03, 0x00, 0xfd, 0xd6, 0x2a, 0x01, 0xff, 0x00]);
+  frame = new Frame([0xd6, 0x2a, 0x01]);
+  await send(device, frame.to_bytes());
+  /// await send(device, [0x00, 0x00, 0xff, 0xff, 0xff, 0x03, 0x00, 0xfd, 0xd6, 0x2a, 0x01, 0xff, 0x00]);
   // Level 9:nfc.clf.transport:<<< 0000ff00ff00
   await receive(device, 6);
   // Level 9:nfc.clf.transport:<<< 0000ffffff0300fdd72b00fe00
@@ -57,32 +131,18 @@ async function session(device) {
 
   // Level 9:nfc.clf.rcs380:SwitchRF 00
   // Level 9:nfc.clf.transport:>>> 0000ffffff0300fdd606002400
-  await send(device, [0x00, 0x00, 0xff, 0xff, 0xff, 0x03, 0x00, 0xfd, 0xd6, 0x06, 0x00, 0x24, 0x00]);
+  frame = new Frame([0xd6, 0x06, 0x00]);
+  await send(device, frame.to_bytes());
+  /// await send(device, [0x00, 0x00, 0xff, 0xff, 0xff, 0x03, 0x00, 0xfd, 0xd6, 0x06, 0x00, 0x24, 0x00]);
   // Level 9:nfc.clf.transport:<<< 0000ff00ff00
   await receive(device, 6);
   // Level 9:nfc.clf.transport:<<< 0000ffffff0300fdd707002200
   await receive(device, 13);
-
-  // Level 9:nfc.clf.rcs380:GetFirmwareVersion
-  // Level 9:nfc.clf.transport:>>> 0000ffffff0200fed6200a00
-  // Level 9:nfc.clf.transport:<<< 0000ff00ff00
-  // Level 9:nfc.clf.transport:<<< 0000ffffff0400fcd7211101f600
-  // DEBUG:nfc.clf.rcs380:firmware version 1.11
-  // INFO:nfc.clf:using SONY RC-S380/P NFC Port-100 v1.11 at usb:020:014
-
-  // Level 9:nfc.clf.rcs380:SwitchRF 00
-  // Level 9:nfc.clf.transport:>>> 0000ffffff0300fdd606002400
-  await send(device, [0x00, 0x00, 0xff, 0xff, 0xff, 0x03, 0x00, 0xfd, 0xd6, 0x06, 0x00, 0x24, 0x00]);
-  // Level 9:nfc.clf.transport:<<< 0000ff00ff00
-  await receive(device, 6);
-  // Level 9:nfc.clf.transport:<<< 0000ffffff0300fdd707002200
-  await receive(device, 13);
-  // DEBUG:nfc.clf:sense 212F
-  // DEBUG:nfc.clf.rcs380:polling for NFC-F technology
 
   // Level 9:nfc.clf.rcs380:InSetRF 01010f01
   // Level 9:nfc.clf.transport:>>> 0000ffffff0600fad60001010f011800
-  await send(device, [0x00, 0x00, 0xff, 0xff, 0xff, 0x06, 0x00, 0xfa, 0xd6, 0x00, 0x01, 0x01, 0x0f, 0x01, 0x18, 0x00]);
+  frame = new Frame([0xd6, 0x00, 0x01, 0x01, 0x0f, 0x01]);
+  await send(device, frame.to_bytes());
   // Level 9:nfc.clf.transport:<<< 0000ff00ff00
   await receive(device, 6);
   // Level 9:nfc.clf.transport:<<< 0000ffffff0300fdd701002800
@@ -90,7 +150,8 @@ async function session(device) {
 
   // Level 9:nfc.clf.rcs380:InSetProtocol 00180101020103000400050006000708080009000a000b000c000e040f001000110012001306
   // Level 9:nfc.clf.transport:>>> 0000ffffff2800d8d60200180101020103000400050006000708080009000a000b000c000e040f0010001100120013064b00
-  await send(device, [0x00, 0x00, 0xff, 0xff, 0xff, 0x28, 0x00, 0xd8, 0xd6, 0x02, 0x00, 0x18, 0x01, 0x01, 0x02, 0x01, 0x03, 0x00, 0x04, 0x00, 0x05, 0x00, 0x06, 0x00, 0x07, 0x08, 0x08, 0x00, 0x09, 0x00, 0x0a, 0x00, 0x0b, 0x00, 0x0c, 0x00, 0x0e, 0x04, 0x0f, 0x00, 0x10, 0x00, 0x11, 0x00, 0x12, 0x00, 0x13, 0x06, 0x4b, 0x00]);
+  frame = new Frame([0xd6, 0x02, 0x00, 0x18, 0x01, 0x01, 0x02, 0x01, 0x03, 0x00, 0x04, 0x00, 0x05, 0x00, 0x06, 0x00, 0x07, 0x08, 0x08, 0x00, 0x09, 0x00, 0x0a, 0x00, 0x0b, 0x00, 0x0c, 0x00, 0x0e, 0x04, 0x0f, 0x00, 0x10, 0x00, 0x11, 0x00, 0x12, 0x00, 0x13, 0x06]);
+  await send(device, frame.to_bytes());
   // Level 9:nfc.clf.transport:<<< 0000ff00ff00
   await receive(device, 6);
   // Level 9:nfc.clf.transport:<<< 0000ffffff0300fdd703002600
@@ -98,7 +159,9 @@ async function session(device) {
 
   // Level 9:nfc.clf.rcs380:InSetProtocol 0018
   // Level 9:nfc.clf.transport:>>> 0000ffffff0400fcd60200181000
-  await send(device, [0x00, 0x00, 0xff, 0xff, 0xff, 0x04, 0x00, 0xfc, 0xd6, 0x02, 0x00, 0x18, 0x10, 0x00]);
+
+  frame = new Frame([0xd6, 0x02, 0x00, 0x18]);
+  await send(device, frame.to_bytes());
   // Level 9:nfc.clf.transport:<<< 0000ff00ff00
   await receive(device, 6);
   // Level 9:nfc.clf.transport:<<< 0000ffffff0300fdd703002600
@@ -107,11 +170,16 @@ async function session(device) {
 
   // Level 9:nfc.clf.rcs380:InCommRF 6e000600ffff0100
   // Level 9:nfc.clf.transport:>>> 0000ffffff0a00f6d6046e000600ffff0100b300
-  await send(device, [0x00, 0x00, 0xff, 0xff, 0xff, 0x0a, 0x00, 0xf6, 0xd6, 0x04, 0x6e, 0x00, 0x06, 0x00, 0xff, 0xff, 0x01, 0x00, 0xb3, 0x00]);
+  frame = new Frame([0xd6, 0x04, 0x6e, 0x00, 0x06, 0x00, 0xff, 0xff, 0x01, 0x00]);
+  await send(device, frame.to_bytes());
   // Level 9:nfc.clf.transport:<<< 0000ff00ff00
   await receive(device, 6);
   // Level 9:nfc.clf.transport:<<< 0000ffffff1b00e5d70500000000081401000000000000000000000000000000000000f700
-  let idm = (await receive(device, 37)).slice(17, 24);
+  data = await receive(device, 37);
+  recv_frame = new Frame(data);
+  const idm_length = 7;
+  // let idm = data.slice(17, 24);
+  let idm = recv_frame.get_data().slice(9, 9 + idm_length);
   if (idm.length > 0) {
     let idmStr = '';
     for (let i = 0; i < idm.length; i++) {
@@ -145,17 +213,17 @@ startButton.addEventListener('click', async () => {
   let device;
   try {
     device = await navigator.usb.requestDevice({ filters: [{
-      vendorId: 0x054c,
-      productId: 0x06C3
+      vendorId:  0x054c, // Sony
+      productId: 0x06C3  // RC-S380
     }]});
-    console.log("open");
-    await device.open();
   } catch (e) {
     console.log(e);
     alert(e);
     throw e;
   }
   try {
+    console.log("open");
+    await device.open();
     console.log("selectConfiguration");
     await device.selectConfiguration(1);
     console.log("claimInterface");
