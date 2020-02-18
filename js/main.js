@@ -233,7 +233,7 @@ startButton.addEventListener('click', async () => {
     waitingMessage.style.display = 'block';
     do {
       await session(device);
-      await sleep(2000);
+      await sleep(1000);
     } while (true);
   } catch (e) {
     console.log(e);
